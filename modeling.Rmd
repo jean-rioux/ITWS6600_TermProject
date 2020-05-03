@@ -1,0 +1,558 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+rm(list=ls())
+```
+
+
+```{r}
+library(dplyr)
+library(lubridate)
+library(plyr)
+library(glmnet)
+library(ISLR)
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(PerformanceAnalytics)
+library(ggplot2)
+library(plotly)
+library(parallel)
+library(xts)
+library(zoo)
+library(ISLR)
+library(caret)
+library(class)
+library(dplyr)
+library(e1071)
+library(ranger)
+library(MLmetrics)
+library(randomForest)
+```
+
+```{r}
+hmda=read.csv("C:\\Users\\Jean\\Documents\\2020 Spring\\ITWS 6600\\hmda\\new_HMDA.5.1.csv")
+hmda=na.omit(hmda)
+hmda=hmda[,-1]
+hmda=hmda%>%group_by(year)%>%mutate(ln.yr.med=median(loan.fwd))
+hmda=hmda%>%group_by(year)%>%mutate(ap.yr.med=median(app.fwd))
+hmda$loan.fwd=ifelse(hmda$loan.fwd>hmda$ln.yr.med,1,0)
+hmda$app.fwd=ifelse(hmda$app.fwd>hmda$ap.yr.med,1,0)
+hmda=subset(hmda,select = -c(ln.yr.med,ap.yr.med))
+hmda$loan.fwd=as.factor(hmda$loan.fwd)
+hmda$app.fwd=as.factor(hmda$app.fwd)
+hmda$dist=sqrt((hmda$lat-34.303370)^2+
+                 (hmda$long+82.519900)^2)
+hmda=hmda%>%group_by(year)%>%mutate(inc.lvl=as.factor(ifelse(Med.Income>median(Med.Income),"hi","lo")))
+levels(hmda$loan.fwd)= c("lo","hi")
+levels(hmda$app.fwd)= c("lo","hi")
+train=hmda%>%filter(year<=2014)
+test=hmda%>%filter(year>2014)
+```
+
+
+```{r}
+
+```
+
+
+```{r}
+log.mod.loan=train(loan.fwd~.-app.fwd-dist-inc.lvl,data = train,
+                   method = "glmnet",
+                   preProcess = c("nzv","center", "scale"),
+                   metric = "ROC",
+                   tuneGrid=expand.grid(alpha= 1,
+                                        lambda=seq(.00001, .0001, length = 20)),
+                   trControl = trainControl(method = "cv",
+                                            number = 5,
+                                            classProbs = T,
+                                            summaryFunction = twoClassSummary,
+                                            savePredictions = "final",
+                                            allowParallel = T),
+                   family = "binomial")
+
+log.mod.loan
+coef(log.mod.loan$finalModel, log.mod.loan$bestTune$lambda)
+
+pred=predict.train(log.mod.loan,test)
+confusionMatrix(pred,test$loan.fwd)
+
+tmp_coeffs=coef(log.mod.loan$finalModel,log.mod.loan$bestTune$lambda)
+log.coef=data.frame(name = tmp_coeffs@Dimnames[[1]][tmp_coeffs@i + 1], coefficient = tmp_coeffs@x)
+```
+
+```{r}
+log.gain = predict.train(log.mod.loan,test,type = "prob")
+log.gain$log = test$loan.fwd
+log.gain$lo = NULL
+log.gain=arrange(log.gain,desc(log.gain$hi))
+log.gain$cum = cumsum(log.gain$log=="hi")/sum(log.gain$log=="hi")
+log.gain$tot=1:nrow(log.gain)/nrow(log.gain)
+
+ggplot(data = log.gain,aes(x=tot))+geom_abline(slope = 1)+geom_line(aes(y=cum))+ggtitle("Logit Lasso (Loan Growth) Lift Chart")
+
+tmp.pred=predict.train(log.mod.loan,train,type = "prob")$hi
+
+acc=c()
+for (i in 1:100){
+  tmp=ifelse(tmp.pred>i/100,"hi","lo")
+  acc[i]=mean(tmp==train$loan.fwd)
+}
+plot(acc)
+acc[which.max(acc)]
+which.max(acc) #=.51
+tmp.log=predict.train(log.mod.loan,test,type = "prob")$hi
+tmp.log=as.factor(ifelse(tmp.log>which.max(acc)/100,"hi","lo"))
+
+confusionMatrix(tmp.log,test$loan.fwd)
+```
+
+```{r}
+log.mod.app=train(app.fwd~.-loan.fwd-dist-inc.lvl,data = train,
+                   method = "glmnet",
+                   preProcess = c("nzv","center", "scale"),
+                   metric = "ROC",
+                   tuneGrid=expand.grid(alpha= 1,
+                                        lambda=seq(.00001, .0001, length = 20)),
+                   trControl = trainControl(method = "cv",
+                                            number = 5,
+                                            classProbs = T,
+                                            summaryFunction = twoClassSummary,
+                                            savePredictions = "final",
+                                            allowParallel = T),
+                   family = "binomial")
+
+summary(log.mod.app)
+coef(log.mod.app$finalModel, log.mod.app$bestTune$lambda)
+
+pred=predict.train(log.mod.app,test)
+confusionMatrix(pred,test$app.fwd)
+
+tmp_coeffs=coef(log.mod.app$finalModel,log.mod.app$bestTune$lambda)
+tmp_coeffs
+log.app.coef=data.frame(name = tmp_coeffs@Dimnames[[1]][tmp_coeffs@i + 1], coefficient = tmp_coeffs@x)
+```
+
+```{r}
+log.gain = predict.train(log.mod.app,test,type = "prob")
+log.gain$log = test$app.fwd
+log.gain$lo = NULL
+log.gain=arrange(log.gain,desc(log.gain$hi))
+log.gain$cum = cumsum(log.gain$log=="hi")/sum(log.gain$log=="hi")
+log.gain$tot=1:nrow(log.gain)/nrow(log.gain)
+
+ggplot(data = log.gain,aes(x=tot))+geom_abline(slope = 1)+geom_line(aes(y=cum))+ggtitle("Logit Lasso (App Growth) Lift Chart")
+```
+
+
+```{r}
+
+knn.mod.loan=train(loan.fwd~.-app.fwd-dist-inc.lvl,
+                   data=train,
+                   method = "knn",
+                   metric = "ROC",
+                   preProcess = c("center", "scale"),
+                   trControl = trainControl(method = "cv",
+                                            number = 5,
+                                            classProbs = T,
+                                            summaryFunction = twoClassSummary,
+                                            savePredictions = "final",
+                                            allowParallel = T),
+                   tuneGrid = expand.grid(k = 20:40))
+
+knn.mod.loan
+knn.pred = predict.train(knn.mod.loan,test)
+
+
+confusionMatrix(knn.pred,as.factor(test$loan.fwd))
+
+tmp.pred=predict.train(knn.mod.loan,train,type = "prob")$hi
+
+acc=c()
+for (i in 1:100){
+  tmp=ifelse(tmp.pred>i/100,"hi","lo")
+  acc[i]=mean(tmp==train$loan.fwd)
+}
+plot(acc)
+acc[which.max(acc)]
+which.max(acc) #=.54
+tmp.log=predict.train(knn.mod.loan,test,type = "prob")$hi
+tmp.log=as.factor(ifelse(tmp.log>which.max(acc)/100,"hi","lo"))
+
+confusionMatrix(tmp.log,test$loan.fwd)
+```
+
+```{r}
+knn.gain = predict.train(knn.mod.loan,test,type = "prob")
+knn.gain$knn = test$loan.fwd
+knn.gain$lo = NULL
+knn.gain=arrange(knn.gain,desc(knn.gain$hi))
+knn.gain$cum = cumsum(knn.gain$knn=="hi")/sum(knn.gain$knn=="hi")
+knn.gain$tot=1:nrow(knn.gain)/nrow(knn.gain)
+ggplot(data = knn.gain,aes(x=tot))+geom_abline(slope = 1)+geom_line(aes(y=cum))+ggtitle("KNN (Loan Growth) Lift Chart")
+```
+
+
+```{r}
+
+knn.red.loan=train(loan.fwd~.-app.fwd-dist-inc.lvl-Applications-
+                     One.to.Four.Unit-Black-White-Male-Accepted-
+                     Purchase-Lien.First-Hoepa-Stdv.Loan,
+                   data=train,
+                   method = "knn",
+                   metric = "ROC",
+                   preProcess = c("center", "scale"),
+                   trControl = trainControl(method = "cv",
+                                            number = 5,
+                                            classProbs = T,
+                                            summaryFunction = twoClassSummary,
+                                            savePredictions = "final",
+                                            allowParallel = T),
+                   tuneGrid = expand.grid(k = 35:55))
+
+knn.red.loan
+knn.pred = predict.train(knn.mod.loan,test)
+
+
+confusionMatrix(knn.pred,as.factor(test$loan.fwd))
+
+tmp.pred=predict.train(knn.red.loan,train,type = "prob")$hi
+
+acc=c()
+for (i in 1:100){
+  tmp=ifelse(tmp.pred>i/100,"hi","lo")
+  acc[i]=mean(tmp==train$loan.fwd)
+}
+plot(acc)
+acc[which.max(acc)]
+which.max(acc) #=.54
+tmp.log=predict.train(knn.red.loan,test,type = "prob")$hi
+tmp.log=as.factor(ifelse(tmp.log>which.max(acc)/100,"hi","lo"))
+
+confusionMatrix(tmp.log,test$loan.fwd)
+```
+
+
+
+```{r}
+knn.gain = predict.train(knn.mod.loan,test,type = "prob")
+knn.gain$knn = test$loan.fwd
+knn.gain$lo = NULL
+knn.gain=arrange(knn.gain,desc(knn.gain$hi))
+knn.gain$cum = cumsum(knn.gain$knn=="hi")/sum(knn.gain$knn=="hi")
+knn.gain$tot=1:nrow(knn.gain)/nrow(knn.gain)
+ggplot(data = knn.gain,aes(x=tot))+geom_abline(slope = 1)+geom_line(aes(y=cum))+ggtitle("KNN-Reduced (Loan Growth) Lift Chart")
+```
+
+
+
+```{r}
+rf.mod.log=train(loan.fwd~.-app.fwd-dist-inc.lvl,
+                   data=train,
+                   method = "rf",
+                   metric = "ROC",
+                   trControl = trainControl(method = "cv",
+                                            number = 5,
+                                            classProbs = T,
+                                            summaryFunction = twoClassSummary,
+                                            savePredictions = "final",
+                                            allowParallel = T),
+                   tuneGrid = expand.grid(.mtry = 5:10))
+rf.mod.log #optimal mtry = 6
+
+varImpPlot(rf.mod.log$finalModel)
+```
+
+```{r}
+
+rf.loan.pred=predict.train(rf.mod.log,test)
+confusionMatrix(rf.loan.pred,test$loan.fwd)
+rf.gain = predict.train(rf.mod.log,test,type = "prob")
+rf.gain$rf = test$loan.fwd
+rf.gain$lo = NULL
+rf.gain=arrange(rf.gain,desc(rf.gain$hi))
+rf.gain$cum = cumsum(rf.gain$rf=="hi")/sum(rf.gain$rf=="hi")
+rf.gain$tot=1:nrow(rf.gain)/nrow(rf.gain)
+
+ggplot(data = rf.gain,aes(x=tot))+geom_abline(slope = 1)+geom_line(aes(y=cum))+ggtitle("RF (Loan Growth) Lift Chart")
+
+tmp.pred=predict.train(rf.mod.log,train,type = "prob")$hi
+acc=c()
+for (i in 1:100){
+  tmp=ifelse(tmp.pred>i/100,"hi","lo")
+  acc[i]=mean(tmp==train$loan.fwd)
+}
+plot(acc)
+acc[which.max(acc)]
+which.max(acc) #=.54
+tmp.log=predict.train(rf.mod.log,test,type = "prob")$hi
+tmp.log=as.factor(ifelse(tmp.log>which.max(acc)/100,"hi","lo"))
+
+confusionMatrix(tmp.log,test$loan.fwd)
+```
+
+```{r}
+rf.mod.app=train(app.fwd~.-loan.fwd-dist-inc.lvl,
+                   data=train,
+                   method = "rf",
+                   metric = "ROC",
+                   trControl = trainControl(method = "cv",
+                                            number = 5,
+                                            classProbs = T,
+                                            summaryFunction = twoClassSummary,
+                                            savePredictions = "final",
+                                            allowParallel = T),
+                   tuneGrid = expand.grid(.mtry = 5:12))
+rf.mod.app #optimal mtry = 8
+
+varImpPlot(rf.mod.app$finalModel)
+
+rf.pred=predict.train(rf.mod.app,test)
+confusionMatrix(rf.pred,test$app.fwd)
+
+```
+
+```{r}
+rf.gain = predict.train(rf.mod.app,test,type = "prob")
+rf.gain$rf = test$app.fwd
+rf.gain$lo = NULL
+rf.gain=arrange(rf.gain,desc(rf.gain$hi))
+rf.gain$cum = cumsum(rf.gain$rf=="hi")/sum(rf.gain$rf=="hi")
+rf.gain$tot=1:nrow(rf.gain)/nrow(rf.gain)
+
+ggplot(data = rf.gain,aes(x=tot))+geom_abline(slope = 1)+geom_line(aes(y=cum))+ggtitle("RF (App Growth) Lift Chart")
+```
+
+```{r}
+hmda.18=read.csv("C:\\Users\\Jean\\Documents\\2020 Spring\\ITWS 6600\\hmda\\new_HMDA.18.csv")
+
+hmda.18=hmda.18%>%group_by(year)%>%mutate(inc.lvl=as.factor(ifelse(Med.Income>median(Med.Income),"hi","lo")))
+hmda.18$dist=sqrt((hmda.18$lat-34.303370)^2+
+                 (hmda.18$long+82.519900)^2)
+hmda.18$app.fwd=as.factor(0)
+levels(hmda.18$app.fwd)=c("lo","hi")
+hmda.18$loan.fwd=as.factor(0)
+levels(hmda.18$loan.fwd)=c("lo","hi")
+
+preds=data.frame()
+preds=predict.train(log.mod.loan,hmda.18,type = "prob")
+preds$lo=NULL
+names(preds)="loan.fwd"
+
+tmp=predict.train(log.mod.app,hmda.18,type = "prob")
+tmp$lo=NULL
+names(tmp)="app.fwd"
+
+preds=cbind(hmda.18$census_tract,hmda.18$lat,hmda.18$long,preds,tmp,hmda.18$dist,hmda.18$inc.lvl)
+names(preds)=c("census_tract","lat","long","loan.fwd",
+               "app.fwd","dist","inc.lvl")
+preds$inc.lvl=ifelse(preds$inc.lvl=="hi",1,0)
+preds=preds%>%mutate(dist.perc = percent_rank(dist))
+preds$score=.25*(preds$loan.fwd+
+                   preds$app.fwd+
+                   preds$inc.lvl+
+                   (1-preds$dist.perc))
+```
+
+```{r}
+knn.app=train(app.fwd~.-loan.fwd-dist-inc.lvl,
+                   data=train,
+                   method = "knn",
+                   metric = "ROC",
+                   preProcess = c("center", "scale"),
+                   trControl = trainControl(method = "cv",
+                                            number = 5,
+                                            classProbs = T,
+                                            summaryFunction = twoClassSummary,
+                                            savePredictions = "final",
+                                            allowParallel = T),
+                   tuneGrid = expand.grid(k = 30:60))
+
+knn.app
+knn.pred = predict.train(knn.app,test)
+
+
+confusionMatrix(knn.pred,as.factor(test$app.fwd))
+
+tmp.pred=predict.train(knn.app,train,type = "prob")$hi
+
+acc=c()
+for (i in 1:100){
+  tmp=ifelse(tmp.pred>i/100,"hi","lo")
+  acc[i]=mean(tmp==train$app.fwd)
+}
+plot(acc)
+acc[which.max(acc)]
+which.max(acc) #=.54
+tmp.log=predict.train(knn.red.loan,test,type = "prob")$hi
+tmp.log=as.factor(ifelse(tmp.log>which.max(acc)/100,"hi","lo"))
+
+confusionMatrix(tmp.log,test$app.fwd)
+```
+
+```{r}
+knn.gain = predict.train(knn.app,test,type = "prob")
+knn.gain$knn = test$app.fwd
+knn.gain$lo = NULL
+knn.gain=arrange(knn.gain,desc(knn.gain$hi))
+knn.gain$cum = cumsum(knn.gain$knn=="hi")/sum(knn.gain$knn=="hi")
+knn.gain$tot=1:nrow(knn.gain)/nrow(knn.gain)
+ggplot(data = knn.gain,aes(x=tot))+geom_abline(slope = 1)+geom_line(aes(y=cum))+ggtitle("KNN (App Growth) Lift Chart")
+```
+
+```{r}
+knn.red.app=train(app.fwd~.-loan.fwd-dist-inc.lvl-
+                    One.to.Four.Unit-Purchase,
+                   data=train,
+                   method = "knn",
+                   metric = "ROC",
+                   preProcess = c("center", "scale"),
+                   trControl = trainControl(method = "cv",
+                                            number = 5,
+                                            classProbs = T,
+                                            summaryFunction = twoClassSummary,
+                                            savePredictions = "final",
+                                            allowParallel = T),
+                   tuneGrid = expand.grid(k = 35:55))
+
+knn.red.app
+knn.pred = predict.train(knn.red.app,test)
+
+
+confusionMatrix(knn.pred,as.factor(test$app.fwd))
+
+tmp.pred=predict.train(knn.red.app,train,type = "prob")$hi
+
+acc=c()
+for (i in 1:100){
+  tmp=ifelse(tmp.pred>i/100,"hi","lo")
+  acc[i]=mean(tmp==train$app.fwd)
+}
+plot(acc)
+acc[which.max(acc)]
+which.max(acc) #=.54
+tmp.log=predict.train(knn.red.loan,test,type = "prob")$hi
+tmp.log=as.factor(ifelse(tmp.log>which.max(acc)/100,"hi","lo"))
+
+confusionMatrix(tmp.log,test$app.fwd)
+```
+
+```{r}
+knn.gain = predict.train(knn.red.app,test,type = "prob")
+knn.gain$knn = test$app.fwd
+knn.gain$lo = NULL
+knn.gain=arrange(knn.gain,desc(knn.gain$hi))
+knn.gain$cum = cumsum(knn.gain$knn=="hi")/sum(knn.gain$knn=="hi")
+knn.gain$tot=1:nrow(knn.gain)/nrow(knn.gain)
+ggplot(data = knn.gain,aes(x=tot))+geom_abline(slope = 1)+geom_line(aes(y=cum))+ggtitle("KNN-Reduced (App Growth) Lift Chart")
+```
+
+```{r}
+fin.loan=train(loan.fwd~.-app.fwd-dist-inc.lvl,data = hmda,
+                   method = "glmnet",
+                   preProcess = c("nzv","center", "scale"),
+                   metric = "ROC",
+                   tuneGrid=expand.grid(alpha= 1,
+                                        lambda=seq(.00001, .0001, length = 20)),
+                   trControl = trainControl(method = "cv",
+                                            number = 5,
+                                            classProbs = T,
+                                            summaryFunction = twoClassSummary,
+                                            savePredictions = "final",
+                                            allowParallel = T),
+                   family = "binomial")
+
+fin.app=train(app.fwd~.-loan.fwd-dist-inc.lvl,data = hmda,
+                   method = "glmnet",
+                   preProcess = c("nzv","center", "scale"),
+                   metric = "ROC",
+                   tuneGrid=expand.grid(alpha= 1,
+                                        lambda=seq(.00001, .0001, length = 20)),
+                   trControl = trainControl(method = "cv",
+                                            number = 5,
+                                            classProbs = T,
+                                            summaryFunction = twoClassSummary,
+                                            savePredictions = "final",
+                                            allowParallel = T),
+                   family = "binomial")
+```
+
+```{r}
+hmda.18=read.csv("C:\\Users\\Jean\\Documents\\2020 Spring\\ITWS 6600\\hmda\\new_HMDA.18.csv")
+hmda.18$loan.fwd=as.factor("lo")
+levels(hmda.18$loan.fwd)=c("lo","hi")
+hmda.18$app.fwd=as.factor("lo")
+levels(hmda.18$app.fwd)=c("lo","hi")
+hmda.18$dist=sqrt((hmda.18$lat-34.303370)^2+
+                 (hmda.18$long+82.519900)^2)
+hmda.18=hmda.18%>%group_by(year)%>%mutate(inc.lvl=ifelse(Med.Income>median(Med.Income),1,0))
+
+
+preds=predict.train(fin.loan,hmda.18,type = "prob")
+preds$loan.growth=preds$hi
+preds$hi=predict.train(fin.app,hmda.18,type = "prob")$hi
+preds$app.growth=preds$hi
+preds$lo=NULL
+preds$hi=NULL
+fin.preds=cbind(hmda.18[,c("census_tract","lat","long","inc.lvl","dist")],preds)
+fin.preds=fin.preds %>% mutate(dist.perc = percent_rank(dist))
+fin.preds=fin.preds %>% mutate(score = .25*(loan.growth+app.growth+1-dist.perc+inc.lvl))
+
+write.csv(fin.preds,"C:\\Users\\Jean\\Documents\\2020 Spring\\ITWS 6600\\hmda\\hmda.preds.csv")
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(maps)
+library(tools)
+library(ggrepel)
+fin.preds=read.csv("C:\\Users\\Jean\\Documents\\2020 Spring\\ITWS 6600\\hmda\\hmda.preds.csv")
+theme_set(theme_bw())
+world = ne_countries(scale = "medium",returnclass = "sf")
+states = st_as_sf(maps::map("state", plot = FALSE, fill = TRUE))
+states = cbind(states, st_coordinates(st_centroid(states)))
+
+states$ID = toTitleCase(as.character(states$ID))
+
+counties = st_as_sf(maps::map("county", plot = FALSE, fill = TRUE))
+counties = subset(counties, grepl("south carolina", counties$ID))
+counties$area = as.numeric(st_area(counties))
+
+sc.cities=data.frame(City=c("Columbia","Charleston",
+                            "Greenville","Sumter",
+                            "Spartanburg","Iva"),
+                    lat=c(34.000710,32.776474,34.852619,
+                          33.930271,34.947910,34.307460),
+                    long=c(-81.034813,-79.931053,-82.394012,
+                           -80.367477,-81.934662,-82.663150))
+sc.cities = st_as_sf(sc.cities, coords = c("long", "lat"), remove = FALSE, 
+    crs = 4326, agr = "constant")
+```
+
+
+```{r}
+inc.plot=ggplot(data = world)+
+  geom_sf(fill="antiquewhite")+
+  geom_sf(data = states,fill = NA)+
+  geom_sf(data = counties,aes(fill=area)) +
+  guides(size = F)+
+  geom_sf(data = sc.cities)+
+  geom_point(data = fin.preds,aes(x=long,y=lat,colour=score,size=score))+
+  scale_color_gradient(low="green", high="red")+
+  coord_sf(xlim = c(-84, -78),
+           ylim = c(31.5, 35.5), expand = FALSE)+
+  ggtitle("Final Location Scores")+xlab("Longitude")+ylab("Latitude")+
+  annotate("label",x=sc.cities$long,
+           y=sc.cities$lat,size = 3,
+           fontface = "bold",
+           label = sc.cities$City)
+inc.plot
+```
+
