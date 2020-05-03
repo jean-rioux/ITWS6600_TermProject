@@ -1,0 +1,176 @@
+---
+title: "HMDA_EDA"
+author: "Jean Rioux"
+date: "2/9/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##HMDA EDA
+
+```{r}
+library(dplyr)
+library(corrplot)
+library(funModeling)
+library(ggplot2)
+library(reshape2)
+library(glmnet)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(maps)
+library(tools)
+library(ggrepel)
+```
+
+```{r}
+orig=read.csv("C:\\Users\\Jean\\Documents\\2020 Spring\\ITWS 6600\\hmda\\new_HMDA.18.csv")
+
+hmda=read.csv("C:\\Users\\Jean\\Documents\\2020 Spring\\ITWS 6600\\hmda\\new_HMDA.5.1.csv")
+hmda=na.omit(hmda)
+```
+
+```{r}
+corrplot(cor(hmda[,-6]),type = "lower",bg="lightblue",method = "color")
+```
+
+```{r}
+ggplot(data = orig,aes(x=population))+geom_histogram(fill="red",colour="black")+ggtitle("2018 Distribution Of Population")#+xlim(0,200)
+
+ggplot(data = orig,aes(x=Applications))+geom_histogram(fill="blue",colour="black")+xlim(0,750)+ggtitle("2018 Distribution of Applicants")
+
+ggplot(data = orig,aes(x=Med.Income))+geom_histogram(fill="green",colour="black")+xlim(0,200)+ggtitle("2018 Distribution Of Median Applicant Income")
+
+ggplot(data = orig,aes(x=loan.return))+geom_histogram(fill="yellow",colour="black")+xlim(-100,100)+ggtitle("2018 Distribution Of Loan Growth")
+
+ggplot(data = orig,aes(x=app.growth))+geom_histogram(fill="orange",colour="black")+xlim(-100,100)+ggtitle("2018 Distribution Of Application Growth")
+```
+
+
+```{r}
+theme_set(theme_bw())
+
+world = ne_countries(scale = "medium",returnclass = "sf")
+states = st_as_sf(map("state", plot = FALSE, fill = TRUE))
+states = cbind(states, st_coordinates(st_centroid(states)))
+
+states$ID = toTitleCase(as.character(states$ID))
+
+counties = st_as_sf(map("county", plot = FALSE, fill = TRUE))
+counties = subset(counties, grepl("south carolina", counties$ID))
+counties$area = as.numeric(st_area(counties))
+
+sc.cities=data.frame(City=c("Columbia","Charleston",
+                            "Greenville","Sumter",
+                            "Spartanburg","Iva"),
+                    lat=c(34.000710,32.776474,34.852619,
+                          33.930271,34.947910,34.307460),
+                    long=c(-81.034813,-79.931053,-82.394012,
+                           -80.367477,-81.934662,-82.663150))
+sc.cities = st_as_sf(sc.cities, coords = c("long", "lat"), remove = FALSE, 
+    crs = 4326, agr = "constant")
+```
+
+```{r}
+inc.plot=ggplot(data = world)+
+  geom_sf(fill="antiquewhite")+
+  geom_sf(data = states,fill = NA)+
+  geom_sf(data = counties,aes(fill=area)) +
+  guides(size = F)+
+  geom_sf(data = sc.cities)+
+  geom_point(data = orig,aes(x=long,y=lat,colour=Med.Income,size=Med.Income))+
+  scale_color_gradient(low="green", high="red")+
+  coord_sf(xlim = c(-84, -78),
+           ylim = c(31.5, 35.5), expand = FALSE)+
+  ggtitle("2018 Applicant Income Map")+xlab("Longitude")+ylab("Latitude")+
+  annotate("label",x=sc.cities$long,
+           y=sc.cities$lat,size = 3,
+           fontface = "bold",
+           label = sc.cities$City)
+inc.plot
+```
+
+
+```{r}
+pop.plot=ggplot(data = world)+
+  geom_sf(fill="antiquewhite2")+
+  geom_sf(data = states,fill = NA)+
+  geom_sf(data = counties,aes(fill=area)) +
+  guides(size = F)+
+  geom_sf(data = sc.cities)+
+  geom_point(data = orig,aes(x=long,y=lat,colour=population,size=population))+
+  scale_color_gradient(low="green", high="red")+
+  coord_sf(xlim = c(-84, -78),
+           ylim = c(31.5, 35.5), expand = FALSE)+
+  ggtitle("2018 Population Map")+xlab("Longitude")+ylab("Latitude")+
+  annotate("label",x=sc.cities$long,
+           y=sc.cities$lat,size = 3,
+           fontface = "bold",
+           label = sc.cities$City)
+pop.plot
+```
+
+```{r}
+pop.app.plot=ggplot(data = world)+
+  geom_sf(fill="antiquewhite2")+
+  geom_sf(data = states,fill = NA)+
+  geom_sf(data = counties,aes(fill=area)) +
+  guides(size = F)+
+  geom_sf(data = sc.cities)+
+  geom_point(data = orig,aes(x=long,y=lat,colour=Applications,size=Applications))+
+  scale_color_gradient(low="green", high="red")+
+  coord_sf(xlim = c(-84, -78),
+           ylim = c(31.5, 35.5), expand = FALSE)+
+  ggtitle("2018 Application Map")+xlab("Longitude")+ylab("Latitude")+
+  annotate("label",x=sc.cities$long,
+           y=sc.cities$lat,size = 3,
+           fontface = "bold",
+           label = sc.cities$City)
+pop.app.plot
+```
+
+```{r}
+app.plot=ggplot(data = world)+
+  geom_sf(fill="antiquewhite3")+
+  geom_sf(data = states,fill = NA)+
+  geom_sf(data = counties,aes(fill=area)) +
+  guides(size = F)+
+  geom_sf(data = sc.cities)+
+  geom_point(data = orig,aes(x=long,y=lat,colour=app.growth,size=app.growth))+
+  scale_color_gradient(low="green", high="red")+
+  coord_sf(xlim = c(-84, -78),
+           ylim = c(31.5, 35.5), expand = FALSE)+
+  ggtitle("2018 Applicant Growth Map")+xlab("Longitude")+ylab("Latitude")+
+  annotate("label",x=sc.cities$long,
+           y=sc.cities$lat,size = 3,
+           fontface = "bold",
+           label = sc.cities$City)
+app.plot
+```
+
+```{r}
+loan.plot=ggplot(data = world)+
+  geom_sf(fill="antiquewhite4")+
+  geom_sf(data = states,fill = NA)+
+  geom_sf(data = counties,aes(fill=area)) +
+  guides(size = F)+
+  geom_sf(data = sc.cities)+
+  geom_point(data = orig,aes(x=long,y=lat,colour=loan.return,size=loan.return))+
+  scale_color_gradient(low="green", high="red")+
+  coord_sf(xlim = c(-84, -78),
+           ylim = c(31.5, 35.5), expand = FALSE)+
+  ggtitle("2018 Loan Growth Map")+xlab("Longitude")+ylab("Latitude")+
+  annotate("label",x=sc.cities$long,
+           y=sc.cities$lat,size = 3,
+           fontface = "bold",
+           label = sc.cities$City)
+loan.plot
+```
+
